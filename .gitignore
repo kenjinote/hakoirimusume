@@ -361,3 +361,5 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/installer/LogFiles
+/installer/MsixPackage/installer/installer_x86.msix
