@@ -1,6 +1,6 @@
 ## Privacy Policy
 
-The app "Hakoiri Musume" respects your privacy and is designed to be used safely and securely without collecting any personal data.
+The app "二角取り" respects your privacy and is designed to be used safely and securely without collecting any personal data.
 
 ---
 
