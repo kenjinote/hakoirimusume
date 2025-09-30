@@ -1,6 +1,6 @@
 //{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ で生成されたインクルード ファイル。
-// res.rc で使用
+// hakoirimusume.rc で使用
 //
 #define IDB_PNG1                        115
 #define IDB_PNG2                        116
@@ -15,12 +15,13 @@
 #define IDB_PNG11                       125
 #define IDB_PNG12                       126
 #define IDB_PNG13                       127
+#define IDI_ICON1                       128
 
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        128
+#define _APS_NEXT_RESOURCE_VALUE        129
 #define _APS_NEXT_COMMAND_VALUE         40001
 #define _APS_NEXT_CONTROL_VALUE         1000
 #define _APS_NEXT_SYMED_VALUE           101

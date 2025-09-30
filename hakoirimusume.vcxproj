@@ -170,6 +170,22 @@
   <ItemGroup>
     <ResourceCompile Include="hakoirimusume.rc" />
   </ItemGroup>
+  <ItemGroup>
+    <Image Include="back.png" />
+    <Image Include="icon.ico" />
+    <Image Include="koma1.png" />
+    <Image Include="koma10.png" />
+    <Image Include="koma11.png" />
+    <Image Include="koma12.png" />
+    <Image Include="koma2.png" />
+    <Image Include="koma3.png" />
+    <Image Include="koma4.png" />
+    <Image Include="koma5.png" />
+    <Image Include="koma6.png" />
+    <Image Include="koma7.png" />
+    <Image Include="koma8.png" />
+    <Image Include="koma9.png" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

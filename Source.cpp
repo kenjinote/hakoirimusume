@@ -719,7 +719,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPreInst, LPWSTR pCmdLine, in
 	}
 
 	MSG msg;
-	const WNDCLASS wndclass = { 0,WndProc,0,0,hInstance,0,LoadCursor(0,IDC_ARROW),(HBRUSH)(COLOR_WINDOW + 1),0,szClassName };
+	const WNDCLASS wndclass = { 0,WndProc,0,0,hInstance,LoadIcon(hInstance,MAKEINTRESOURCE(IDI_ICON1)),LoadCursor(0,IDC_ARROW),(HBRUSH)(COLOR_WINDOW + 1),0,szClassName };
 	if (!RegisterClass(&wndclass)) return 0;
 
 	// 初期DPIを取得し、初期ウィンドウサイズを物理ピクセルで計算

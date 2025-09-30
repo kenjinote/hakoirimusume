@@ -29,4 +29,48 @@
       <Filter>リソース ファイル</Filter>
     </ResourceCompile>
   </ItemGroup>
+  <ItemGroup>
+    <Image Include="icon.ico">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="back.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma1.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma2.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma3.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma4.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma5.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma6.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma7.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma8.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma9.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma10.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma11.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+    <Image Include="koma12.png">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+  </ItemGroup>
 </Project>
