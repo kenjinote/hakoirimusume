@@ -1,8 +1,25 @@
-﻿#pragma comment(lib, "gdiplus")
+﻿#include <windows.h>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <wincodec.h>
+#include <sstream>
 
-#include <windows.h>
-#include <gdiplus.h>
-#include "resource.h"
+// Direct2DおよびWICのライブラリをリンク
+#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "windowscodecs.lib")
+
+#include "resource.h" // リソース定義ファイル (IDB_PNG1など)
+
+// インターフェースポインターを安全に解放するマクロ
+template <class T> inline void SafeRelease(T** ppT)
+{
+	if (*ppT != NULL)
+	{
+		(*ppT)->Release();
+		*ppT = NULL;
+	}
+}
 
 TCHAR szClassName[] = TEXT("Window");
 
@@ -15,51 +32,164 @@ TCHAR szClassName[] = TEXT("Window");
 #define WINDOW_WIDTH (MASU_WIDTH*X_NUM)
 #define WINDOW_HEIGHT (MASU_HEIGHT*Y_NUM)
 
-int* g_x, * g_y;
-int* g_sx, * g_sy;
-int* g_imgno;
-int* g_field;
+// --- グローバルゲーム変数 (元のコードから維持) ---
+int* g_x = nullptr;
+int* g_y = nullptr;
+int* g_sx = nullptr;
+int* g_sy = nullptr;
+int* g_imgno = nullptr;
+int* g_field = nullptr;
+int g_nLast = 0; // 駒の総数
+int g_nStage = 1; // 現在のレベル
 
-Gdiplus::Image* LoadImageFromResource(HMODULE hModule, LPCWSTR lpName, LPCWSTR lpType)
+// --- Direct2D/WIC/DWrite グローバル変数 ---
+ID2D1Factory* pD2DFactory = nullptr;
+IWICImagingFactory* pWICFactory = nullptr;
+ID2D1HwndRenderTarget* pRT = nullptr;
+ID2D1Bitmap* pBitmap[14] = { nullptr }; // Direct2Dビットマップを格納する配列
+ID2D1SolidColorBrush* pTextBrush = nullptr;
+IDWriteFactory* pDWriteFactory = nullptr;
+IDWriteTextFormat* pTextFormat = nullptr;
+
+// --------------------------------------------------------------------------------
+// --- WIC/Direct2D リソース管理ヘルパー関数 ---
+// --------------------------------------------------------------------------------
+
+// WICとDirect2Dを使用してリソースからビットマップを読み込む
+HRESULT LoadBitmapFromResource(
+	ID2D1RenderTarget* pRenderTarget,
+	IWICImagingFactory* pIWICFactory,
+	HMODULE hModule,
+	LPCWSTR lpName,
+	LPCWSTR lpType,
+	ID2D1Bitmap** ppBitmap
+)
 {
-	const HRSRC hResInfo = FindResource(hModule, lpName, lpType);
-	if (hResInfo)
+	HRSRC hResInfo = FindResource(hModule, lpName, lpType);
+	if (!hResInfo) return E_FAIL;
+
+	DWORD nSize = SizeofResource(hModule, hResInfo);
+	if (!nSize) return E_FAIL;
+
+	HGLOBAL hResData = LoadResource(hModule, hResInfo);
+	if (!hResData) return E_FAIL;
+
+	void* pData = LockResource(hResData);
+	if (!pData) return E_FAIL;
+
+	// IStreamを作成
+	IStream* pStream = nullptr;
+	HRESULT hr = CreateStreamOnHGlobal(NULL, TRUE, &pStream);
+	if (SUCCEEDED(hr))
 	{
-		const int nSize = SizeofResource(hModule, hResInfo);
-		if (nSize)
+		// リソースデータをストリームに書き込む
+		hr = pStream->Write(pData, nSize, NULL);
+	}
+
+	IWICBitmapDecoder* pDecoder = nullptr;
+	IWICBitmapFrameDecode* pSource = nullptr;
+	IWICFormatConverter* pConverter = nullptr;
+
+	if (SUCCEEDED(hr))
+	{
+		// ストリームからWICデコーダーを作成
+		hr = pIWICFactory->CreateDecoderFromStream(pStream, NULL, WICDecodeMetadataCacheOnLoad, &pDecoder);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		// 最初のフレームを取得
+		hr = pDecoder->GetFrame(0, &pSource);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		// フォーマットコンバーターを作成
+		hr = pIWICFactory->CreateFormatConverter(&pConverter);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		// RENDER TARGETのピクセルフォーマットに変換
+		hr = pConverter->Initialize(
+			pSource,
+			GUID_WICPixelFormat32bppPBGRA, // D2D1_ALPHA_MODE_PREMULTIPLIED に対応
+			WICBitmapDitherTypeNone,
+			NULL,
+			0.0,
+			WICBitmapPaletteTypeCustom
+		);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		// Direct2Dビットマップを作成
+		hr = pRenderTarget->CreateBitmapFromWicBitmap(pConverter, NULL, ppBitmap);
+	}
+
+	// WICオブジェクトの解放
+	SafeRelease(&pStream);
+	SafeRelease(&pDecoder);
+	SafeRelease(&pSource);
+	SafeRelease(&pConverter);
+
+	return hr;
+}
+
+// ハードウェアに依存するリソースを作成
+HRESULT CreateDeviceResources(HWND hWnd)
+{
+	HRESULT hr = S_OK;
+
+	if (!pRT)
+	{
+		RECT rc;
+		GetClientRect(hWnd, &rc);
+
+		D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
+
+		// HWNDレンダーターゲットを作成
+		hr = pD2DFactory->CreateHwndRenderTarget(
+			D2D1::RenderTargetProperties(),
+			D2D1::HwndRenderTargetProperties(hWnd, size),
+			&pRT
+		);
+
+		if (SUCCEEDED(hr))
 		{
-			const HGLOBAL hResData = LoadResource(hModule, hResInfo);
-			if (hResData)
+			// テキストブラシを作成
+			hr = pRT->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &pTextBrush);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			// 全ての画像をDirect2Dビットマップとして読み込む
+			HMODULE hModule = (HMODULE)GetWindowLongPtr(hWnd, GWLP_HINSTANCE);
+			for (int i = 0; i < 14; i++)
 			{
-				const void* pData = (void*)LockResource(hResData);
-				if (pData)
-				{
-					IStream* pIStream;
-					ULARGE_INTEGER LargeUInt;
-					LARGE_INTEGER LargeInt;
-					Gdiplus::Image* pImage;
-					CreateStreamOnHGlobal(0, 1, &pIStream);
-					LargeUInt.QuadPart = nSize;
-					pIStream->SetSize(LargeUInt);
-					LargeInt.QuadPart = 0;
-					pIStream->Seek(LargeInt, STREAM_SEEK_SET, NULL);
-					pIStream->Write(pData, nSize, NULL);
-					pImage = Gdiplus::Image::FromStream(pIStream);
-					pIStream->Release();
-					if (pImage)
-					{
-						if (pImage->GetLastStatus() == Gdiplus::Ok)
-						{
-							return pImage;
-						}
-						delete pImage;
-					}
-				}
+				hr = LoadBitmapFromResource(pRT, pWICFactory, hModule, MAKEINTRESOURCE(IDB_PNG1 + i), TEXT("PNG"), &pBitmap[i]);
+				if (FAILED(hr)) break;
 			}
 		}
 	}
-	return 0;
+	return hr;
 }
+
+// ハードウェアに依存するリソースを破棄
+void DiscardDeviceResources()
+{
+	SafeRelease(&pRT);
+	SafeRelease(&pTextBrush);
+	for (int i = 0; i < 14; i++)
+	{
+		SafeRelease(&pBitmap[i]);
+	}
+}
+
+// --------------------------------------------------------------------------------
+// --- ゲームロジック関数 (元のコードから維持) ---
+// --------------------------------------------------------------------------------
+
 void clear_field(int nNo)
 {
 	for (int xx = 0; xx < g_sx[nNo]; xx++)
@@ -262,34 +392,69 @@ VOID initGame(int nLevel, int* pnLast)
 	}
 }
 
+// --------------------------------------------------------------------------------
+// --- ウィンドウプロシージャ (Direct2D描画に変更) ---
+// --------------------------------------------------------------------------------
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-	int i;
 	static BOOL bCapture;
-	static int nStage = 1;
 	static BOOL bSetTimered;
-	static Gdiplus::Image* pImage[14];
-	static BOOL bIsWin;
-	static int nLast;
+	static BOOL bIsWin = FALSE;
 	static int nNo;
 	static int g_oldx, g_oldy;
+	HRESULT hr;
+
 	switch (msg)
 	{
 	case WM_CREATE:
+		// Direct2D/WIC/DWrite ファクトリの初期化
+		hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pD2DFactory);
+		if (FAILED(hr)) return -1;
+
+		hr = CoInitialize(NULL); // WICのためにCOMを初期化
+		if (FAILED(hr)) return -1;
+		hr = CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWICFactory));
+		if (FAILED(hr)) return -1;
+
+		hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&pDWriteFactory));
+		if (FAILED(hr)) return -1;
+
+		// DWrite TextFormatの作成
+		hr = pDWriteFactory->CreateTextFormat(
+			L"Arial",                   // フォント名
+			NULL,                       // フォントコレクション (NULL = システムデフォルト)
+			DWRITE_FONT_WEIGHT_BOLD,    // フォントの太さ
+			DWRITE_FONT_STYLE_NORMAL,   // フォントスタイル
+			DWRITE_FONT_STRETCH_NORMAL, // フォントストレッチ
+			48.0f,                      // フォントサイズ
+			L"ja-jp",                   // ロケール
+			&pTextFormat
+		);
+		if (SUCCEEDED(hr))
+		{
+			pTextFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+			pTextFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+		}
+
+		// ゲームメモリの割り当て
 		g_field = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * X_NUM * Y_NUM);
 		g_x = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 		g_y = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 		g_sx = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 		g_sy = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 		g_imgno = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
-		for (i = 0; i < 14; i++)
-		{
-			pImage[i] = LoadImageFromResource(((LPCREATESTRUCT)lParam)->hInstance, MAKEINTRESOURCE(IDB_PNG1 + i), TEXT("PNG"));
-		}
-		initGame(nStage, &nLast);
+
+		// ゲーム初期化
+		initGame(g_nStage, &g_nLast);
 		break;
-	case WM_ERASEBKGND:
-		return 1;
+
+	case WM_SIZE:
+		// サイズ変更時はRenderTargetを破棄して再作成
+		DiscardDeviceResources();
+		InvalidateRect(hWnd, NULL, FALSE);
+		break;
+
 	case WM_LBUTTONDOWN:
 		if (bIsWin == FALSE)
 		{
@@ -309,6 +474,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			}
 		}
 		break;
+
 	case WM_MOUSEMOVE:
 		if (bCapture)
 		{
@@ -316,6 +482,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			{
 				const WORD xPos = LOWORD(lParam);
 				const WORD yPos = HIWORD(lParam);
+				// 移動量が多い場合にのみ移動処理を実行
 				if (
 					yPos - g_oldy > MASU_HEIGHT * 20 / 32 && DownKoma(nNo, xPos, yPos, &bIsWin) ||
 					g_oldy - yPos > MASU_HEIGHT * 20 / 32 && UpKoma(nNo, xPos, yPos, &bIsWin) ||
@@ -325,11 +492,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				{
 					g_oldx = xPos;
 					g_oldy = yPos;
-					InvalidateRect(hWnd, 0, 0);
+					InvalidateRect(hWnd, 0, FALSE); // GDIのWM_ERASEBKGND回避のためFALSE
 				}
 			}
 		}
 		break;
+
 	case WM_LBUTTONUP:
 		if (bCapture)
 		{
@@ -338,10 +506,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			bCapture = FALSE;
 		}
 		break;
+
 	case WM_TIMER:
 		KillTimer(hWnd, 0x1234);
-		nStage++;
-		if (nStage >= 6)
+		g_nStage++;
+		if (g_nStage >= 6)
 		{
 			MessageBox(hWnd,
 				TEXT("全面クリアーしました。\nあなたはすごい！"),
@@ -353,85 +522,156 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			bIsWin = FALSE;
 			bSetTimered = FALSE;
 			TCHAR szTitle[64];
-			wsprintf(szTitle, TEXT("箱入り娘。（レベル %d）"), nStage);
+			wsprintf(szTitle, TEXT("箱入り娘。（レベル %d）"), g_nStage);
 			SetWindowText(hWnd, szTitle);
-			initGame(nStage, &nLast);
-			InvalidateRect(hWnd, 0, 0);
+			initGame(g_nStage, &g_nLast);
+			InvalidateRect(hWnd, 0, FALSE);
 		}
 		break;
+
 	case WM_PAINT:
 	{
-		PAINTSTRUCT ps;
-		const HDC hdc = BeginPaint(hWnd, &ps);
-		Gdiplus::Graphics graphics(hdc);
-		if (bIsWin == TRUE)
+		// Direct2D描画
+		hr = CreateDeviceResources(hWnd);
+		if (SUCCEEDED(hr))
 		{
-			//クリアーしたとき「見事」と2秒間表示する
-			graphics.DrawImage(pImage[12], 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
-			if (!bSetTimered)
+			PAINTSTRUCT ps;
+			BeginPaint(hWnd, &ps);
+
+			pRT->BeginDraw();
+
+			// 背景をクリア (白)
+			pRT->Clear(D2D1::ColorF(D2D1::ColorF::White));
+
+			if (bIsWin == TRUE)
 			{
-				bSetTimered = TRUE;
-				SetTimer(hWnd, 0x1234, 1000 * 2, NULL);
+				// クリアーしたとき「見事」と2秒間表示する
+				if (pBitmap[12])
+				{
+					// 勝利画面の背景
+					pRT->DrawBitmap(pBitmap[12], D2D1::RectF(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
+				}
+
+				// DirectWriteで「見事」を描画
+				if (pTextBrush && pTextFormat)
+				{
+					pTextBrush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
+					pRT->DrawText(
+						L"見事！\n次のレベルへ",
+						(UINT32)wcslen(L"見事！\n次のレベルへ"),
+						pTextFormat,
+						D2D1::RectF(0, WINDOW_HEIGHT / 4.0f, WINDOW_WIDTH, WINDOW_HEIGHT / 2.0f),
+						pTextBrush
+					);
+				}
+
+				if (!bSetTimered)
+				{
+					bSetTimered = TRUE;
+					SetTimer(hWnd, 0x1234, 1000 * 2, NULL);
+				}
 			}
-		}
-		else
-		{
-			graphics.DrawImage(pImage[0], 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
-			for (i = 1; i < nLast; i++)
+			else
 			{
-				graphics.DrawImage(pImage[g_imgno[i]], g_x[i] * MASU_WIDTH, g_y[i] * MASU_HEIGHT);
+				// 背景画像 (0番)
+				if (pBitmap[0])
+				{
+					pRT->DrawBitmap(pBitmap[0], D2D1::RectF(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
+				}
+
+				// 各駒を描画
+				for (int i = 1; i < g_nLast; i++)
+				{
+					int imgIndex = g_imgno[i];
+					if (pBitmap[imgIndex])
+					{
+						D2D1_RECT_F destRect = D2D1::RectF(
+							(FLOAT)g_x[i] * MASU_WIDTH,
+							(FLOAT)g_y[i] * MASU_HEIGHT,
+							(FLOAT)(g_x[i] + g_sx[i]) * MASU_WIDTH,
+							(FLOAT)(g_y[i] + g_sy[i]) * MASU_HEIGHT
+						);
+						pRT->DrawBitmap(pBitmap[imgIndex], destRect);
+					}
+				}
 			}
+
+			hr = pRT->EndDraw();
+
+			// デバイスが消失した場合、リソースを破棄
+			if (hr == D2DERR_RECREATE_TARGET)
+			{
+				hr = S_OK;
+				DiscardDeviceResources();
+			}
+
+			EndPaint(hWnd, &ps);
 		}
-		EndPaint(hWnd, &ps);
 	}
 	break;
+
 	case WM_DESTROY:
 		KillTimer(hWnd, 0x1234);
-		for (i = 0; i < 14; i++)
-		{
-			delete pImage[i];
-		}
+
+		// Direct2D/WIC/DWrite リソースの解放
+		DiscardDeviceResources();
+		SafeRelease(&pD2DFactory);
+		SafeRelease(&pWICFactory);
+		SafeRelease(&pDWriteFactory);
+		SafeRelease(&pTextFormat);
+		CoUninitialize(); // COMの終了
+
+		// ゲームメモリの解放
 		GlobalFree(g_field);
 		GlobalFree(g_x);
 		GlobalFree(g_y);
 		GlobalFree(g_sx);
 		GlobalFree(g_sy);
 		GlobalFree(g_imgno);
+
 		PostQuitMessage(0);
 		break;
+
 	default:
 		return DefWindowProc(hWnd, msg, wParam, lParam);
 	}
 	return 0;
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPreInst, LPSTR pCmdLine, int nCmdShow)
+// --------------------------------------------------------------------------------
+// --- WinMain (GDI+の初期化/終了を削除) ---
+// --------------------------------------------------------------------------------
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPreInst, LPWSTR pCmdLine, int nCmdShow)
 {
-	ULONG_PTR gdiToken;
-	Gdiplus::GdiplusStartupInput gdiSI;
-	Gdiplus::GdiplusStartup(&gdiToken, &gdiSI, 0);
+	// GDI+ の初期化/終了コードは削除しました
+
 	MSG msg;
-	const WNDCLASS wndclass = { 0,WndProc,0,0,hInstance,0,LoadCursor(0,IDC_ARROW),0,0,szClassName };
-	RegisterClass(&wndclass);
+	const WNDCLASS wndclass = { 0,WndProc,0,0,hInstance,0,LoadCursor(0,IDC_ARROW),(HBRUSH)(COLOR_WINDOW + 1),0,szClassName };
+	if (!RegisterClass(&wndclass)) return 0;
 
 	RECT rect;
 	SetRect(&rect, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
-	AdjustWindowRect(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, 0);
+	AdjustWindowRect(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
 
-	const HWND hWnd = CreateWindowEx(WS_EX_COMPOSITED, szClassName, TEXT("箱入り娘。（レベル 1）"),
+	const HWND hWnd = CreateWindowEx(0, szClassName, TEXT("箱入り娘。（レベル 1）"), // WS_EX_COMPOSITED はDirect2Dでは不要
 		WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
 		CW_USEDEFAULT,
 		CW_USEDEFAULT,
 		rect.right - rect.left,
 		rect.bottom - rect.top,
 		0, 0, hInstance, 0);
+
+	if (!hWnd) return 0;
+
 	ShowWindow(hWnd, SW_SHOWDEFAULT);
 	UpdateWindow(hWnd);
+
 	while (GetMessage(&msg, 0, 0, 0))
 	{
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
 	}
-	Gdiplus::GdiplusShutdown(gdiToken);
+
 	return (int)msg.wParam;
 }
