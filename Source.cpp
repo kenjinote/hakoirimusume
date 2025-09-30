@@ -3,6 +3,8 @@
 #include <dwrite.h>
 #include <wincodec.h>
 #include <sstream>
+// DPI認識のためのヘッダーを追加
+#include <shellscalingapi.h> 
 
 // Direct2DおよびWICのライブラリをリンク
 #pragma comment(lib, "d2d1.lib")
@@ -23,14 +25,30 @@ template <class T> inline void SafeRelease(T** ppT)
 
 TCHAR szClassName[] = TEXT("Window");
 
-#define MASU_WIDTH 32
-#define MASU_HEIGHT 32
+// 論理単位 (DIP) での定義
+// Direct2Dはこれらの値をDIPとして扱い、DPIに応じて自動的にスケーリングします。
+#define MASU_WIDTH_DIP 32 
+#define MASU_HEIGHT_DIP 32
 
 #define X_NUM 10
 #define Y_NUM 12
 
-#define WINDOW_WIDTH (MASU_WIDTH*X_NUM)
-#define WINDOW_HEIGHT (MASU_HEIGHT*Y_NUM)
+// ウィンドウの論理サイズ (DIP)
+#define WINDOW_WIDTH_DIP (MASU_WIDTH_DIP * X_NUM)
+#define WINDOW_HEIGHT_DIP (MASU_HEIGHT_DIP * Y_NUM)
+
+// --- DPI グローバル変数 ---
+// 現在のDPIスケールファクター (DPI / 96.0)。マウス座標変換に使用。
+float g_dpiScale = 1.0f;
+
+// --- Direct2D/WIC/DWrite グローバル変数 ---
+ID2D1Factory* pD2DFactory = nullptr;
+IWICImagingFactory* pWICFactory = nullptr;
+ID2D1HwndRenderTarget* pRT = nullptr;
+ID2D1Bitmap* pBitmap[14] = { nullptr }; // Direct2Dビットマップを格納する配列
+ID2D1SolidColorBrush* pTextBrush = nullptr;
+IDWriteFactory* pDWriteFactory = nullptr;
+IDWriteTextFormat* pTextFormat = nullptr;
 
 // --- グローバルゲーム変数 (元のコードから維持) ---
 int* g_x = nullptr;
@@ -42,17 +60,8 @@ int* g_field = nullptr;
 int g_nLast = 0; // 駒の総数
 int g_nStage = 1; // 現在のレベル
 
-// --- Direct2D/WIC/DWrite グローバル変数 ---
-ID2D1Factory* pD2DFactory = nullptr;
-IWICImagingFactory* pWICFactory = nullptr;
-ID2D1HwndRenderTarget* pRT = nullptr;
-ID2D1Bitmap* pBitmap[14] = { nullptr }; // Direct2Dビットマップを格納する配列
-ID2D1SolidColorBrush* pTextBrush = nullptr;
-IDWriteFactory* pDWriteFactory = nullptr;
-IDWriteTextFormat* pTextFormat = nullptr;
-
 // --------------------------------------------------------------------------------
-// --- WIC/Direct2D リソース管理ヘルパー関数 ---
+// --- WIC/Direct2D リソース管理ヘルパー関数 (変更なし) ---
 // --------------------------------------------------------------------------------
 
 // WICとDirect2Dを使用してリソースからビットマップを読み込む
@@ -143,14 +152,25 @@ HRESULT CreateDeviceResources(HWND hWnd)
 
 	if (!pRT)
 	{
+		// 現在のウィンドウのDPIを取得し、RenderTargetPropertiesに明示的に設定します。
+		UINT dpi = GetDpiForWindow(hWnd);
+		FLOAT dpiFloat = (FLOAT)dpi;
+
 		RECT rc;
 		GetClientRect(hWnd, &rc);
 
+		// クライアント領域のサイズ（物理ピクセル）をDirect2Dに渡す
 		D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
 
 		// HWNDレンダーターゲットを作成
+		// DPIプロパティに現在のDPIを明示的に設定
 		hr = pD2DFactory->CreateHwndRenderTarget(
-			D2D1::RenderTargetProperties(),
+			D2D1::RenderTargetProperties(
+				D2D1_RENDER_TARGET_TYPE_DEFAULT,
+				D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_UNKNOWN),
+				dpiFloat, // DPI X
+				dpiFloat  // DPI Y
+			),
 			D2D1::HwndRenderTargetProperties(hWnd, size),
 			&pRT
 		);
@@ -180,6 +200,7 @@ void DiscardDeviceResources()
 {
 	SafeRelease(&pRT);
 	SafeRelease(&pTextBrush);
+	// **修正**: ビットマップ配列のループ条件を i < 14 に修正
 	for (int i = 0; i < 14; i++)
 	{
 		SafeRelease(&pBitmap[i]);
@@ -187,7 +208,7 @@ void DiscardDeviceResources()
 }
 
 // --------------------------------------------------------------------------------
-// --- ゲームロジック関数 (元のコードから維持) ---
+// --- ゲームロジック関数 (DIP定数名に合わせて修正) ---
 // --------------------------------------------------------------------------------
 
 void clear_field(int nNo)
@@ -273,94 +294,51 @@ BOOL LeftKoma(int nNo, int xx, int yy, LPBOOL pbIsWin)
 	return TRUE;
 }
 
-void Level1(int* pnLast)
-{
+// レベルデータ関数 (変更なし)
+void Level1(int* pnLast) {
 	const int m_x[] = { 0,3,1,7,1,7,3,5,3,5,1,7 };
 	const int m_y[] = { 0,1,1,1,5,5,5,5,7,7,9,9 };
 	const int m_sx[] = { 0,4,2,2,2,2,2,2,2,2,2,2 };
 	const int m_sy[] = { 0,4,4,4,4,4,2,2,2,2,2,2 };
 	const int m_imgno[] = { 0,1,2,3,4,5,11,11,11,11,11,11 };
 	*pnLast = 12;
-	for (int i = 0; i < *pnLast; i++)
-	{
-		g_x[i] = m_x[i];
-		g_y[i] = m_y[i];
-		g_sx[i] = m_sx[i];
-		g_sy[i] = m_sy[i];
-		g_imgno[i] = m_imgno[i];
-	}
+	for (int i = 0; i < *pnLast; i++) { g_x[i] = m_x[i]; g_y[i] = m_y[i]; g_sx[i] = m_sx[i]; g_sy[i] = m_sy[i]; g_imgno[i] = m_imgno[i]; }
 }
-
-void Level2(int* pnLast)
-{
+void Level2(int* pnLast) {
 	const int m_x[] = { 0,3,1,5,1,5,1,1,7,7,1,7 };
 	const int m_y[] = { 0,1,5,5,7,7,1,3,1,3,9,9 };
 	const int m_sx[] = { 0,4,4,4,4,4,2,2,2,2,2,2 };
 	const int m_sy[] = { 0,4,2,2,2,2,2,2,2,2,2,2 };
 	const int m_imgno[] = { 0,1,6,7,8,9,11,11,11,11,11,11 };
 	*pnLast = 12;
-	for (int i = 0; i < *pnLast; i++)
-	{
-		g_x[i] = m_x[i];
-		g_y[i] = m_y[i];
-		g_sx[i] = m_sx[i];
-		g_sy[i] = m_sy[i];
-		g_imgno[i] = m_imgno[i];
-	}
+	for (int i = 0; i < *pnLast; i++) { g_x[i] = m_x[i]; g_y[i] = m_y[i]; g_sx[i] = m_sx[i]; g_sy[i] = m_sy[i]; g_imgno[i] = m_imgno[i]; }
 }
-
-void Level3(int* pnLast)
-{
+void Level3(int* pnLast) {
 	const int m_x[] = { 0,3,1,7,1,5,1,3,5,7,1,7 };
 	const int m_y[] = { 0,1,1,1,7,7,5,5,5,5,9,9 };
 	const int m_sx[] = { 0,4,2,2,4,4,2,2,2,2,2,2 };
 	const int m_sy[] = { 0,4,4,4,2,2,2,2,2,2,2,2 };
 	const int m_imgno[] = { 0,1,2,3,8,9,11,11,11,11,11,11 };
 	*pnLast = 12;
-	for (int i = 0; i < *pnLast; i++)
-	{
-		g_x[i] = m_x[i];
-		g_y[i] = m_y[i];
-		g_sx[i] = m_sx[i];
-		g_sy[i] = m_sy[i];
-		g_imgno[i] = m_imgno[i];
-	}
+	for (int i = 0; i < *pnLast; i++) { g_x[i] = m_x[i]; g_y[i] = m_y[i]; g_sx[i] = m_sx[i]; g_sy[i] = m_sy[i]; g_imgno[i] = m_imgno[i]; }
 }
-
-void Level4(int* pnLast)
-{
+void Level4(int* pnLast) {
 	const int m_x[] = { 0,3,1,7,1,5,1,3,5,7,1,7 };
 	const int m_y[] = { 0,1,1,1,5,5,7,7,7,7,9,9 };
 	const int m_sx[] = { 0,4,2,2,4,4,2,2,2,2,2,2 };
 	const int m_sy[] = { 0,4,4,4,2,2,2,2,2,2,2,2 };
 	const int m_imgno[] = { 0,1,2,3,8,9,11,11,11,11,11,11 };
 	*pnLast = 12;
-	for (int i = 0; i < *pnLast; i++)
-	{
-		g_x[i] = m_x[i];
-		g_y[i] = m_y[i];
-		g_sx[i] = m_sx[i];
-		g_sy[i] = m_sy[i];
-		g_imgno[i] = m_imgno[i];
-	}
+	for (int i = 0; i < *pnLast; i++) { g_x[i] = m_x[i]; g_y[i] = m_y[i]; g_sx[i] = m_sx[i]; g_sy[i] = m_sy[i]; g_imgno[i] = m_imgno[i]; }
 }
-
-void Level5(int* pnLast)
-{
+void Level5(int* pnLast) {
 	const int m_x[] = { 0,3,1,7,1,7,3,3,5,1,7 };
 	const int m_y[] = { 0,1,1,1,5,5,5,7,7,9,9 };
 	const int m_sx[] = { 0,4,2,2,2,2,4,2,2,2,2 };
 	const int m_sy[] = { 0,4,4,4,4,4,2,2,2,2,2 };
 	const int m_imgno[] = { 0,1,2,3,4,5,10,11,11,11,11 };
 	*pnLast = 11;
-	for (int i = 0; i < *pnLast; i++)
-	{
-		g_x[i] = m_x[i];
-		g_y[i] = m_y[i];
-		g_sx[i] = m_sx[i];
-		g_sy[i] = m_sy[i];
-		g_imgno[i] = m_imgno[i];
-	}
+	for (int i = 0; i < *pnLast; i++) { g_x[i] = m_x[i]; g_y[i] = m_y[i]; g_sx[i] = m_sx[i]; g_sy[i] = m_sy[i]; g_imgno[i] = m_imgno[i]; }
 }
 
 //レベル(nLevel)に応じてゲーム画面を初期化する
@@ -393,7 +371,7 @@ VOID initGame(int nLevel, int* pnLast)
 }
 
 // --------------------------------------------------------------------------------
-// --- ウィンドウプロシージャ (Direct2D描画に変更) ---
+// --- ウィンドウプロシージャ (DPI対応ロジックを追加) ---
 // --------------------------------------------------------------------------------
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -402,13 +380,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	static BOOL bSetTimered;
 	static BOOL bIsWin = FALSE;
 	static int nNo;
+	// マウスイベントの比較用に物理ピクセル座標を保持
 	static int g_oldx, g_oldy;
 	HRESULT hr;
 
 	switch (msg)
 	{
+	case WM_NCCREATE:
+	{
+		// ウィンドウ作成時に初期DPIを取得し、スケールファクターを設定
+		UINT dpi = GetDpiForWindow(hWnd);
+		g_dpiScale = (float)dpi / 96.0f;
+		return DefWindowProc(hWnd, msg, wParam, lParam);
+	}
+
 	case WM_CREATE:
-		// Direct2D/WIC/DWrite ファクトリの初期化
+		// Direct2D/WIC/DWrite ファクトリの初期化 (変更なし)
 		hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pD2DFactory);
 		if (FAILED(hr)) return -1;
 
@@ -420,15 +407,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&pDWriteFactory));
 		if (FAILED(hr)) return -1;
 
-		// DWrite TextFormatの作成
+		// DWrite TextFormatの作成 (フォントサイズはDIPで指定)
 		hr = pDWriteFactory->CreateTextFormat(
-			L"Arial",                   // フォント名
-			NULL,                       // フォントコレクション (NULL = システムデフォルト)
-			DWRITE_FONT_WEIGHT_BOLD,    // フォントの太さ
-			DWRITE_FONT_STYLE_NORMAL,   // フォントスタイル
+			L"Arial",                           // フォント名
+			NULL,// フォントコレクション (NULL = システムデフォルト)
+			DWRITE_FONT_WEIGHT_BOLD,// フォントの太さ
+			DWRITE_FONT_STYLE_NORMAL,// フォントスタイル
 			DWRITE_FONT_STRETCH_NORMAL, // フォントストレッチ
-			48.0f,                      // フォントサイズ
-			L"ja-jp",                   // ロケール
+			48.0f,// フォントサイズ (DIP)
+			L"ja-jp",// ロケール
 			&pTextFormat
 		);
 		if (SUCCEEDED(hr))
@@ -437,32 +424,100 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			pTextFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 		}
 
-		// ゲームメモリの割り当て
-		g_field = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * X_NUM * Y_NUM);
+		// ゲームメモリの割り当てと初期化 (変更なし)
+		g_field = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * X_NUM * Y_NUM);	
 		g_x = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 		g_y = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 		g_sx = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 		g_sy = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 		g_imgno = (int*)GlobalAlloc(GMEM_FIXED, sizeof(int) * Y_NUM);
 
-		// ゲーム初期化
 		initGame(g_nStage, &g_nLast);
 		break;
 
-	case WM_SIZE:
-		// サイズ変更時はRenderTargetを破棄して再作成
+	case WM_DPICHANGED:
+	{
+		// DPIが変更されたときの処理
+		// wParamの上位ワード(HIWORD)からY軸のDPIを取得。
+		UINT newDpi = HIWORD(wParam);
+		g_dpiScale = (float)newDpi / 96.0f;
+
+		// RenderTargetとビットマップを破棄し、新しいDPIで再作成する準備をする
 		DiscardDeviceResources();
+
+		// **修正**: 新しいDPIに基づき、クライアント領域が論理サイズ (DIP) にぴったり合うようにウィンドウサイズを再計算
+
+		// 1. 新しいDPIに基づいた必要なクライアントサイズ (物理ピクセル) を計算
+		int newClientWidthPx = MulDiv(WINDOW_WIDTH_DIP, newDpi, 96);
+		int newClientHeightPx = MulDiv(WINDOW_HEIGHT_DIP, newDpi, 96);
+
+		// 2. ウィンドウ全体のスタイルと拡張スタイルを取得
+		DWORD dwStyle = (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE);
+		DWORD dwExStyle = (DWORD)GetWindowLongPtr(hWnd, GWL_EXSTYLE);
+
+		// 3. 必要なクライアント領域を保持するためのウィンドウ全体のサイズを計算
+		RECT newWindowRc = { 0, 0, newClientWidthPx, newClientHeightPx };
+
+		// AdjustWindowRectExForDpiは、クライアント領域 (newWindowRc) を保持するための
+		// ウィンドウ全体のサイズを計算し、その結果を newWindowRc に書き込みます。
+		BOOL adjusted = AdjustWindowRectExForDpi(&newWindowRc, dwStyle, FALSE, dwExStyle, newDpi);
+
+		if (adjusted)
+		{
+			// lParamが示す推奨矩形から位置情報 (left, top) を取得
+			RECT* const prcOldWindow = (RECT*)lParam;
+
+			// newWindowRcには、クライアント領域を含むウィンドウ全体の矩形が格納されているため、
+			// その幅と高さをそのまま利用します。
+			int finalWidth = newWindowRc.right - newWindowRc.left;
+			int finalHeight = newWindowRc.bottom - newWindowRc.top;
+
+			// 推奨される位置 (left, top) を使用してウィンドウを再配置
+			SetWindowPos(hWnd,
+				NULL,
+				prcOldWindow->left, // 推奨されたX座標
+				prcOldWindow->top,  // 推奨されたY座標
+				finalWidth,      // 新しいDPIに合わせた正確な幅
+				finalHeight,     // 新しいDPIに合わせた正確な高さ
+				SWP_NOZORDER | SWP_NOACTIVATE);
+		}
+
 		InvalidateRect(hWnd, NULL, FALSE);
 		break;
+	}
+
+	case WM_SIZE:
+	{
+		if (pRT)
+		{
+			D2D1_SIZE_U size = D2D1::SizeU(LOWORD(lParam), HIWORD(lParam));
+			pRT->Resize(size);
+		}
+		InvalidateRect(hWnd, NULL, FALSE);
+		break;
+	}
 
 	case WM_LBUTTONDOWN:
 		if (bIsWin == FALSE)
 		{
-			const WORD xPos = LOWORD(lParam);
-			const WORD yPos = HIWORD(lParam);
-			g_oldx = xPos;
-			g_oldy = yPos;
-			nNo = g_field[yPos / MASU_HEIGHT * X_NUM + xPos / MASU_WIDTH];
+			const WORD xPos_px = LOWORD(lParam); // 物理ピクセル座標
+			const WORD yPos_px = HIWORD(lParam); // 物理ピクセル座標
+
+			// 物理ピクセル座標を論理座標 (DIP) に変換
+			const float logical_x_f = (float)xPos_px / g_dpiScale;
+			const float logical_y_f = (float)yPos_px / g_dpiScale;
+
+			// グリッド座標を計算 (マス目のインデックス)
+			const int grid_x = (int)(logical_x_f / MASU_WIDTH_DIP);
+			const int grid_y = (int)(logical_y_f / MASU_HEIGHT_DIP);
+
+			// 比較用に物理座標を保持
+			g_oldx = xPos_px;
+			g_oldy = yPos_px;
+
+			// 駒の選択はグリッド座標で行う
+			nNo = g_field[grid_y * X_NUM + grid_x];
+
 			if (nNo == 99)
 			{
 				nNo = 0;
@@ -480,18 +535,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
 			if (nNo)
 			{
-				const WORD xPos = LOWORD(lParam);
-				const WORD yPos = HIWORD(lParam);
-				// 移動量が多い場合にのみ移動処理を実行
+				const WORD xPos_px = LOWORD(lParam);
+				const WORD yPos_px = HIWORD(lParam);
+
+				// 移動判定は物理ピクセルで行う。閾値に現在のDPIスケールを適用
+				const float threshold = 20.0f / 32.0f;
+
 				if (
-					yPos - g_oldy > MASU_HEIGHT * 20 / 32 && DownKoma(nNo, xPos, yPos, &bIsWin) ||
-					g_oldy - yPos > MASU_HEIGHT * 20 / 32 && UpKoma(nNo, xPos, yPos, &bIsWin) ||
-					xPos - g_oldx > MASU_WIDTH * 20 / 32 && RightKoma(nNo, xPos, yPos, &bIsWin) ||
-					g_oldx - xPos > MASU_WIDTH * 20 / 32 && LeftKoma(nNo, xPos, yPos, &bIsWin)
+					yPos_px - g_oldy > MASU_HEIGHT_DIP * g_dpiScale * threshold && DownKoma(nNo, xPos_px, yPos_px, &bIsWin) ||
+					g_oldy - yPos_px > MASU_HEIGHT_DIP * g_dpiScale * threshold && UpKoma(nNo, xPos_px, yPos_px, &bIsWin) ||
+					xPos_px - g_oldx > MASU_WIDTH_DIP * g_dpiScale * threshold && RightKoma(nNo, xPos_px, yPos_px, &bIsWin) ||
+					g_oldx - xPos_px > MASU_WIDTH_DIP * g_dpiScale * threshold && LeftKoma(nNo, xPos_px, yPos_px, &bIsWin)
 					)
 				{
-					g_oldx = xPos;
-					g_oldy = yPos;
+					g_oldx = xPos_px;
+					g_oldy = yPos_px;
 					InvalidateRect(hWnd, 0, FALSE); // GDIのWM_ERASEBKGND回避のためFALSE
 				}
 			}
@@ -508,6 +566,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		break;
 
 	case WM_TIMER:
+		// タイマー処理 (変更なし)
 		KillTimer(hWnd, 0x1234);
 		g_nStage++;
 		if (g_nStage >= 6)
@@ -543,24 +602,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			// 背景をクリア (白)
 			pRT->Clear(D2D1::ColorF(D2D1::ColorF::White));
 
+			// Direct2DはDIPで描画するため、以下の座標はDIPで計算する
+			const FLOAT fWindowWidthDIP = (FLOAT)WINDOW_WIDTH_DIP;
+			const FLOAT fWindowHeightDIP = (FLOAT)WINDOW_HEIGHT_DIP;
+			const FLOAT fMasuWidthDIP = (FLOAT)MASU_WIDTH_DIP;
+			const FLOAT fMasuHeightDIP = (FLOAT)MASU_HEIGHT_DIP;
+
 			if (bIsWin == TRUE)
 			{
 				// クリアーしたとき「見事」と2秒間表示する
 				if (pBitmap[12])
 				{
 					// 勝利画面の背景
-					pRT->DrawBitmap(pBitmap[12], D2D1::RectF(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
+					pRT->DrawBitmap(pBitmap[12], D2D1::RectF(0, 0, fWindowWidthDIP, fWindowHeightDIP));
 				}
 
 				// DirectWriteで「見事」を描画
 				if (pTextBrush && pTextFormat)
 				{
+					// D2DはDIPで描画するため、RectFもDIPを使用
 					pTextBrush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
 					pRT->DrawText(
 						L"見事！\n次のレベルへ",
 						(UINT32)wcslen(L"見事！\n次のレベルへ"),
 						pTextFormat,
-						D2D1::RectF(0, WINDOW_HEIGHT / 4.0f, WINDOW_WIDTH, WINDOW_HEIGHT / 2.0f),
+						D2D1::RectF(0, fWindowHeightDIP / 4.0f, fWindowWidthDIP, fWindowHeightDIP / 2.0f),
 						pTextBrush
 					);
 				}
@@ -576,7 +642,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				// 背景画像 (0番)
 				if (pBitmap[0])
 				{
-					pRT->DrawBitmap(pBitmap[0], D2D1::RectF(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
+					// D2DはDIPで描画するため、RectFもDIPを使用
+					pRT->DrawBitmap(pBitmap[0], D2D1::RectF(0, 0, fWindowWidthDIP, fWindowHeightDIP));
 				}
 
 				// 各駒を描画
@@ -585,11 +652,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 					int imgIndex = g_imgno[i];
 					if (pBitmap[imgIndex])
 					{
+						// D2DはDIPで描画するため、RectFはDIPで計算する
 						D2D1_RECT_F destRect = D2D1::RectF(
-							(FLOAT)g_x[i] * MASU_WIDTH,
-							(FLOAT)g_y[i] * MASU_HEIGHT,
-							(FLOAT)(g_x[i] + g_sx[i]) * MASU_WIDTH,
-							(FLOAT)(g_y[i] + g_sy[i]) * MASU_HEIGHT
+							(FLOAT)g_x[i] * fMasuWidthDIP,
+							(FLOAT)g_y[i] * fMasuHeightDIP,
+							(FLOAT)(g_x[i] + g_sx[i]) * fMasuWidthDIP,
+							(FLOAT)(g_y[i] + g_sy[i]) * fMasuHeightDIP
 						);
 						pRT->DrawBitmap(pBitmap[imgIndex], destRect);
 					}
@@ -613,7 +681,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_DESTROY:
 		KillTimer(hWnd, 0x1234);
 
-		// Direct2D/WIC/DWrite リソースの解放
+		// Direct2D/WIC/DWrite リソースの解放 (変更なし)
 		DiscardDeviceResources();
 		SafeRelease(&pD2DFactory);
 		SafeRelease(&pWICFactory);
@@ -621,7 +689,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		SafeRelease(&pTextFormat);
 		CoUninitialize(); // COMの終了
 
-		// ゲームメモリの解放
+		// ゲームメモリの解放 (変更なし)
 		GlobalFree(g_field);
 		GlobalFree(g_x);
 		GlobalFree(g_y);
@@ -639,22 +707,33 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 // --------------------------------------------------------------------------------
-// --- WinMain (GDI+の初期化/終了を削除) ---
+// --- WinMain (DPI対応ロジックを追加) ---
 // --------------------------------------------------------------------------------
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPreInst, LPWSTR pCmdLine, int nCmdShow)
 {
-	// GDI+ の初期化/終了コードは削除しました
+	// **最重要**: プロセス全体のDPI認識コンテキストを設定
+	// Per-Monitor V2 (モニターごとのDPI変更に反応する最も推奨されるDPIモード)
+	if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == FALSE)
+	{
+	}
 
 	MSG msg;
 	const WNDCLASS wndclass = { 0,WndProc,0,0,hInstance,0,LoadCursor(0,IDC_ARROW),(HBRUSH)(COLOR_WINDOW + 1),0,szClassName };
 	if (!RegisterClass(&wndclass)) return 0;
 
+	// 初期DPIを取得し、初期ウィンドウサイズを物理ピクセルで計算
+	UINT initialDpi = GetDpiForSystem(); // システムの初期DPIを取得 (通常96)
+
+	// 論理サイズ (DIP) を物理ピクセルに変換
+	int physicalWidth = MulDiv(WINDOW_WIDTH_DIP, initialDpi, 96);
+	int physicalHeight = MulDiv(WINDOW_HEIGHT_DIP, initialDpi, 96);
+
 	RECT rect;
-	SetRect(&rect, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+	SetRect(&rect, 0, 0, physicalWidth, physicalHeight);
 	AdjustWindowRect(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
 
-	const HWND hWnd = CreateWindowEx(0, szClassName, TEXT("箱入り娘。（レベル 1）"), // WS_EX_COMPOSITED はDirect2Dでは不要
+	const HWND hWnd = CreateWindowEx(0, szClassName, TEXT("箱入り娘。（レベル 1）"),
 		WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
 		CW_USEDEFAULT,
 		CW_USEDEFAULT,
